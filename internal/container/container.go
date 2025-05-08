@@ -64,6 +64,16 @@ func NewContainer(config *config.Config) (*Container, error) {
 	container.LoaderService = services.NewLoaderService(database, container.Logger, config.BatchSize)
 	container.RevenueService = services.NewRevenueService(database)
 
+	// Initialize cron
+	container.Cron = cron.New()
+	if _, err := container.Cron.AddFunc(config.CronSpec, func() {
+		if err := container.LoaderService.LoadData(config.CSVPath); err != nil {
+			container.Logger.Errorf("Error in scheduled data refresh: %v", err)
+		}
+	}); err != nil {
+		return nil, err
+	}
+
 	// Initialize router
 	container.Router = api.NewRouter(
 		container.LoaderService,

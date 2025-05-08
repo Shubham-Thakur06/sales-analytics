@@ -2,10 +2,9 @@ package api
 
 import (
 	"sales-analytics/internal/api/handlers"
+	"sales-analytics/internal/services"
 
 	"github.com/gin-gonic/gin"
-
-	"sales-analytics/internal/services"
 
 	"github.com/sirupsen/logrus"
 )
