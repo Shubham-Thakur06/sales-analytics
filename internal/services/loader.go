@@ -1,12 +1,18 @@
 package services
 
 import (
+	"encoding/csv"
 	"fmt"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
+	"sales-analytics/internal/models"
+
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type LoadStatus struct {
@@ -85,7 +91,134 @@ func (s *LoaderService) LoadData(csvPath string) error {
 
 // processCSV handles the actual CSV processing
 func (s *LoaderService) processCSV(csvPath string) error {
-	// TODO
+	file, err := os.Open(csvPath)
+	if err != nil {
+		return fmt.Errorf("error opening CSV file: %v", err)
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	// Skip header row
+	_, err = reader.Read()
+	if err != nil {
+		return fmt.Errorf("error reading CSV header: %v", err)
+	}
+
+	var (
+		customerMap = make(map[string]models.Customer)
+		productMap  = make(map[string]models.Product)
+		orders      []models.Order
+		record      []string
+		recordCount int
+	)
+
+	for {
+		record, err = reader.Read()
+		if err != nil {
+			break // End of file
+		}
+
+		recordCount++
+		s.loadingLock.Lock()
+		s.status.RecordsRead = recordCount
+		s.loadingLock.Unlock()
+
+		// Parse numeric values
+		quantity, _ := strconv.Atoi(record[7])                // Quantity Sold
+		unitPrice, _ := strconv.ParseFloat(record[8], 64)     // Unit Price
+		discount, _ := strconv.ParseFloat(record[9], 64)      // Discount
+		shippingCost, _ := strconv.ParseFloat(record[10], 64) // Shipping Cost
+
+		// Parse date
+		date, err := time.Parse("2006-01-02", record[6]) // Date of Sale
+		if err != nil {
+			return fmt.Errorf("error parsing date: %v", err)
+		}
+
+		// Update customer map (last record wins for duplicates)
+		customerMap[record[2]] = models.Customer{
+			CustomerID: record[2],
+			Name:       record[12],
+			Email:      record[13],
+			Address:    record[14],
+			Region:     record[5],
+		}
+
+		// Update product map (last record wins for duplicates)
+		productMap[record[1]] = models.Product{
+			ProductID: record[1],
+			Name:      record[3],
+			Category:  record[4],
+			UnitPrice: unitPrice,
+		}
+
+		orders = append(orders, models.Order{
+			OrderID:       record[0],
+			ProductID:     record[1],
+			CustomerID:    record[2],
+			DateOfSale:    date,
+			Quantity:      quantity,
+			Discount:      discount,
+			ShippingCost:  shippingCost,
+			PaymentMethod: record[11],
+		})
+
+		// Process in batches
+		if len(orders) >= s.batchSize {
+			if err := s.processBatch(mapToSlice(customerMap), mapToSlice(productMap), orders); err != nil {
+				return err
+			}
+			orders = orders[:0]
+			customerMap = make(map[string]models.Customer)
+			productMap = make(map[string]models.Product)
+		}
+	}
+
+	// Process remaining records
+	if len(orders) > 0 {
+		if err := s.processBatch(mapToSlice(customerMap), mapToSlice(productMap), orders); err != nil {
+			return err
+		}
+	}
 
 	return nil
+}
+
+// mapToSlice converts a map to a slice
+func mapToSlice[T any](m map[string]T) []T {
+	result := make([]T, 0, len(m))
+	for _, v := range m {
+		result = append(result, v)
+	}
+	return result
+}
+
+func (s *LoaderService) processBatch(customers []models.Customer, products []models.Product, orders []models.Order) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		// Batch upsert customers
+		if err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "customer_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"name", "email", "address", "region"}),
+		}).CreateInBatches(customers, s.batchSize).Error; err != nil {
+			return fmt.Errorf("error upserting customers: %v", err)
+		}
+
+		// Batch upsert products
+		if err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "product_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"name", "category", "unit_price"}),
+		}).CreateInBatches(products, s.batchSize).Error; err != nil {
+			return fmt.Errorf("error upserting products: %v", err)
+		}
+
+		// Batch insert orders (skip if exists)
+		if err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "order_id"}},
+			DoNothing: true,
+		}).CreateInBatches(orders, s.batchSize).Error; err != nil {
+			return fmt.Errorf("error creating orders: %v", err)
+		}
+
+		return nil
+	})
 }
