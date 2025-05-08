@@ -44,7 +44,7 @@ BATCH_SIZE=1000 # Number of records to process in each batch
 
 1. Clone the repository:
 ```bash
-git clone <repository-url>
+git clone https://github.com/Shubham-Thakur06/sales-analytics.git
 cd sales-analytics
 ```
 
@@ -209,4 +209,4 @@ The CSV file should contain the following columns:
 
 ## License
 
-[License Type] - See LICENSE file for details 
+MIT License - See LICENSE file for details 
