@@ -3,11 +3,10 @@ package container
 import (
 	"fmt"
 
-	// "sales-analytics/internal/api"
+	"sales-analytics/internal/api"
 	"sales-analytics/internal/config"
 	"sales-analytics/internal/models"
-
-	// "sales-analytics/internal/services"
+	"sales-analytics/internal/services"
 
 	"github.com/robfig/cron/v3"
 	"github.com/sirupsen/logrus"
@@ -17,10 +16,13 @@ import (
 
 // Container holds all the dependencies for the application
 type Container struct {
-	Config *config.Config
-	Logger *logrus.Logger
-	DB     *gorm.DB
-	Cron   *cron.Cron
+	Config         *config.Config
+	Logger         *logrus.Logger
+	DB             *gorm.DB
+	Cron           *cron.Cron
+	LoaderService  *services.LoaderService
+	RevenueService *services.RevenueService
+	Router         *api.Router
 }
 
 // NewContainer initializes a new dependency container
@@ -46,6 +48,9 @@ func NewContainer(config *config.Config) (*Container, error) {
 		return nil, fmt.Errorf("failed to connect to database: %v", err)
 	}
 
+	// Store database connection
+	container.DB = database
+
 	// Auto-migrate the database schemas
 	if err := database.AutoMigrate(&models.Customer{}, &models.Product{}, &models.Order{}); err != nil {
 		return nil, fmt.Errorf("failed to auto-migrate database: %v", err)
@@ -53,6 +58,18 @@ func NewContainer(config *config.Config) (*Container, error) {
 
 	// Store config
 	container.Config = config
+
+	// Initialize services
+	container.LoaderService = services.NewLoaderService(database, container.Logger, config.BatchSize)
+	container.RevenueService = services.NewRevenueService(database)
+
+	// Initialize router
+	container.Router = api.NewRouter(
+		container.LoaderService,
+		container.RevenueService,
+		container.Logger,
+		config.CSVPath,
+	)
 
 	return container, nil
 }
